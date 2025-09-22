@@ -1,10 +1,8 @@
 name: Renewal Agreements Automation
-
 on:
   workflow_dispatch:    
   schedule:
     - cron: '0 6 * * *' 
-
 jobs:
   renewal-job:
     runs-on: ubuntu-latest
