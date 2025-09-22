@@ -1,9 +1,3 @@
-#!/usr/bin/env python3
-"""
-Renewal_Agreements.py
-Robust version: handles blank env vars gracefully and avoids crashing when sender/credentials are missing.
-"""
-
 import os
 import gdown
 import pandas as pd
@@ -13,8 +7,6 @@ import ssl
 from email.message import EmailMessage
 from pathlib import Path
 import logging
-
-# ------------------ robust env helpers & CONFIG ------------------
 def _get_env_fallback(key: str, fallback: str = "") -> str:
     """Return trimmed env var; if missing/empty/whitespace return fallback."""
     raw = os.getenv(key)
