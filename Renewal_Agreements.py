@@ -1,4 +1,13 @@
+#!/usr/bin/env python3
+"""
+Renewal_Agreements_fixed.py
+Robust download + validation + parsing + email notifications for renewal agreements.
+Requires: gdown, pandas, openpyxl
+Install: pip install gdown pandas openpyxl
+"""
+
 import os
+import re
 import gdown
 import pandas as pd
 from datetime import datetime, date
@@ -9,16 +18,18 @@ from pathlib import Path
 import logging
 from openpyxl import load_workbook
 
-SENDER_EMAIL = os.getenv("APP_EMAIL", "ganeshsai@nuevostech.com")
-APP_PASSWORD = os.getenv("APP_PASSWORD", "myrvnqpycpouccwb")
-RECIPIENTS = [os.getenv("RECIPIENT_DEFAULT", "")]
-FILE_ID = os.getenv("FILE_ID", "1aEyOe-C98I_sV0AItEewMFBl1l5R85R2")
+# -------- Configuration via environment variables (change as needed) --------
+SENDER_EMAIL = os.getenv("APP_EMAIL", "you@example.com")
+APP_PASSWORD = os.getenv("APP_PASSWORD", "")   # use app-specific password / secret
+RECIPIENTS = [os.getenv("RECIPIENT_DEFAULT", "")]  # default fallback recipient
+FILE_ID_OR_URL = os.getenv("FILE_ID", "1aEyOe-C98I_sV0AItEewMFBl1l5R85R2")
 DOWNLOAD_PATH = Path(os.getenv("DOWNLOAD_PATH", "Renewal.xlsx"))
 SMTP_HOST = os.getenv("SMTP_HOST", "smtp.gmail.com")
 SMTP_PORT = int(os.getenv("SMTP_PORT", 587))
-SEND_CONFIRMATION = False
+SEND_CONFIRMATION = os.getenv("SEND_CONFIRMATION", "False").lower() in ("1","true","yes")
 LOG_FILE = Path(os.getenv("LOG_FILE", "renewal.log"))
 
+# -------- Logging --------
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s | %(levelname)s | %(message)s",
@@ -44,8 +55,37 @@ NTQS Digital
 Note: Your agreement expires in {days_left} day(s)
 """
 
+# -------- Helpers --------
+def extract_file_id(value: str) -> str:
+    """
+    Accepts a plain file id or a full Google Drive / Sheets URL and extracts the file id.
+    If value already looks like an id (no slashes), returns it unchanged.
+    """
+    if not value:
+        return ""
+    value = value.strip()
+    # If it's likely just an ID (no slashes and has hyphens), return directly
+    if "/" not in value and len(value) >= 10:
+        return value
+    # common patterns:
+    # https://docs.google.com/spreadsheets/d/<ID>/...
+    # https://drive.google.com/file/d/<ID>/...
+    m = re.search(r"/d/([a-zA-Z0-9-_]+)", value)
+    if m:
+        return m.group(1)
+    # or ?id=<ID>
+    m = re.search(r"[?&]id=([a-zA-Z0-9-_]+)", value)
+    if m:
+        return m.group(1)
+    # fallback: last path segment that looks like id
+    parts = [p for p in value.split("/") if p]
+    for p in reversed(parts):
+        if re.match(r"^[a-zA-Z0-9-_]{10,}$", p):
+            return p
+    return ""
+
 def _is_probably_xlsx(path: Path) -> bool:
-    """Quick header check: valid .xlsx files are ZIP files starting with PK.."""
+    """Quick header check: .xlsx files are ZIP files starting with PK.."""
     try:
         with open(path, "rb") as f:
             head = f.read(4)
@@ -56,60 +96,82 @@ def _is_probably_xlsx(path: Path) -> bool:
 def _validate_openpyxl(path: Path) -> None:
     """Try to open file with openpyxl to ensure it's a real xlsx."""
     try:
-        # load_workbook will raise if not a real xlsx
         load_workbook(filename=str(path), read_only=True)
     except Exception as e:
         raise ValueError(f"openpyxl failed to open file: {e}")
 
-def download_from_drive(file_id: str, dest: Path):
-    if not file_id or file_id.strip() == "":
-        msg = "FILE_ID is empty. Set FILE_ID environment variable to your Google Drive file id."
-        logging.error(msg)
-        raise ValueError(msg)
+def download_from_drive(file_id_or_url: str, dest: Path, timeout: int = 120):
+    """
+    Robust download:
+      1) Tries drive uc?id=...&export=download (works for uploaded .xlsx)
+      2) If not valid, tries Google Sheets export: /spreadsheets/d/<ID>/export?format=xlsx
+    Raises ValueError on failure (with helpful logged snippet).
+    """
+    file_id = extract_file_id(file_id_or_url)
+    if not file_id:
+        raise ValueError("No file id or valid URL provided. Set FILE_ID env var to a Drive or Sheets URL or id.")
 
-    url = f"https://drive.google.com/uc?id={file_id}&export=download"
-    logging.info(f"Downloading {url} -> {dest} ...")
+    dest.parent.mkdir(parents=True, exist_ok=True)
+
+    # 1) Try uc?id download (works for real uploaded .xlsx in Drive)
+    uc_url = f"https://drive.google.com/uc?id={file_id}&export=download"
+    logging.info(f"Attempting download via uc?id: {uc_url}")
     try:
-        # ensure destination directory exists
-        dest.parent.mkdir(parents=True, exist_ok=True)
+        # remove existing file if any
+        if dest.exists():
+            dest.unlink()
+    except Exception:
+        pass
 
-        # gdown will try to handle confirm tokens for large files
-        result = gdown.download(url, str(dest), quiet=False)
-        if not result:
-            raise RuntimeError("gdown returned no result (download failed).")
-
-        if not dest.exists() or dest.stat().st_size == 0:
-            raise ValueError("Downloaded file is empty or missing.")
-
-        # Quick header check: excel xlsx is a zip (PK..)
-        if not _is_probably_xlsx(dest):
-            # read small text snippet to help debug
-            with open(dest, "rb") as f:
-                sample = f.read(2048)
-            # Try to decode for logging; fallback to repr
-            try:
-                text = sample.decode("utf-8", errors="replace")
-            except Exception:
-                text = repr(sample[:500])
-            logging.error("Downloaded file does not appear to be an XLSX (missing PK header).")
-            logging.error(f"First bytes / snippet of downloaded file:\n{text[:1000]}")
-            # keep the file, but raise explicit error for caller
-            raise ValueError("Downloaded file is NOT a valid Excel .xlsx file (likely an HTML error page or wrong file).")
-
-        # Try to open with openpyxl to fully validate
+    res = gdown.download(uc_url, str(dest), quiet=False, fuzzy=True)
+    if res and dest.exists() and dest.stat().st_size > 0 and _is_probably_xlsx(dest):
         try:
             _validate_openpyxl(dest)
+            logging.info("Downloaded valid XLSX via uc?id.")
+            return
         except Exception as e:
-            logging.exception("openpyxl validation failed.")
-            raise ValueError("Downloaded file could not be opened by openpyxl; the file may be corrupted or not a true .xlsx.") from e
+            logging.warning("uc?id file had PK header but openpyxl failed: %s", e)
 
-        logging.info("Download and validation complete. File appears to be a valid .xlsx.")
+    # 2) Try Google Sheets export (works when ID is a Sheets document)
+    export_url = f"https://docs.google.com/spreadsheets/d/{file_id}/export?format=xlsx"
+    logging.info(f"uc?id method failed or file invalid; trying Sheets export URL: {export_url}")
+    try:
+        if dest.exists():
+            dest.unlink()
     except Exception:
-        logging.exception("Failed to download or validate file from Google Drive.")
-        raise
+        pass
+
+    res2 = gdown.download(export_url, str(dest), quiet=False, fuzzy=True)
+    if res2 and dest.exists() and dest.stat().st_size > 0 and _is_probably_xlsx(dest):
+        try:
+            _validate_openpyxl(dest)
+            logging.info("Downloaded valid XLSX via Sheets export URL.")
+            return
+        except Exception as e:
+            logging.warning("Sheets export produced file with PK header but openpyxl failed: %s", e)
+
+    # If we are here, both attempts failed — collect a helpful snippet
+    snippet = ""
+    if dest.exists():
+        try:
+            with open(dest, "rb") as f:
+                snippet = f.read(2048).decode("utf-8", errors="replace")
+        except Exception:
+            try:
+                snippet = repr(dest.read_bytes()[:512])
+            except Exception:
+                snippet = "<could not read snippet>"
+
+    logging.error("Failed to download a valid xlsx. First bytes / snippet:\n%s", snippet[:2000])
+    raise ValueError(
+        "Downloaded file is not a valid XLSX. Check FILE_ID/URL and sharing permissions (make the sheet 'Anyone with the link - Viewer')."
+    )
 
 def detect_header_and_load(path: Path) -> pd.DataFrame:
-    # try to load raw rows first (header=None)
+    """
+    Load the spreadsheet and attempt to detect which row is the header by scanning first N rows
+    for keywords. Returns a cleaned DataFrame with normalized column names.
+    """
     try:
         raw = pd.read_excel(path, header=None, engine="openpyxl")
     except Exception as e:
@@ -140,7 +202,6 @@ def detect_header_and_load(path: Path) -> pd.DataFrame:
         logging.exception(f"pd.read_excel(header={header_idx}) failed: {e}")
         raise
 
-    # Normalize column names and drop fully empty rows
     df.columns = [str(c).strip() for c in df.columns]
     df = df.dropna(how="all").reset_index(drop=True)
     return df
@@ -182,11 +243,11 @@ def send_email(msg: EmailMessage):
 
 def make_agreements_list(df: pd.DataFrame) -> list:
     agreements = []
-    expiry_cols = [c for c in df.columns if any(tok in c.lower() for tok in ('expiry','due','end','expires'))]
-    email_cols = [c for c in df.columns if 'email' in c.lower()]
-    file_cols = [c for c in df.columns if 'file' in c.lower() or c.lower() == 'name' or 'file name' in c.lower()]
-    path_cols = [c for c in df.columns if 'path' in c.lower()]
-    name_cols = [c for c in df.columns if any(tok in c.lower() for tok in ('name','client','contact','customer','person'))]
+    expiry_cols = [c for c in df.columns if any(tok in str(c).lower() for tok in ('expiry','due','end','expires'))]
+    email_cols = [c for c in df.columns if 'email' in str(c).lower()]
+    file_cols = [c for c in df.columns if 'file' in str(c).lower() or str(c).lower() == 'name' or 'file name' in str(c).lower()]
+    path_cols = [c for c in df.columns if 'path' in str(c).lower()]
+    name_cols = [c for c in df.columns if any(tok in str(c).lower() for tok in ('name','client','contact','customer','person'))]
 
     if not expiry_cols:
         msg = f"No expiry-like column found. Columns discovered: {list(df.columns)}"
@@ -227,7 +288,7 @@ def make_agreements_list(df: pd.DataFrame) -> list:
                 'expiry_date': expiry_dt,
                 'path': str(row.get(path_col, '')).strip() if path_col else '',
                 'status': 'EXPIRES TODAY' if expiry_dt.date() == datetime.now().date() else 'Upcoming',
-                'email': email_val if email_val else RECIPIENTS[0],
+                'email': email_val if email_val else (RECIPIENTS[0] if RECIPIENTS and RECIPIENTS[0] else ''),
                 'name': name_val
             }
             agreements.append(item)
@@ -296,12 +357,14 @@ def run_reminders_and_alerts(agreements: list):
         send_hourly_alert(agreement)
 
 def main_run_once():
+    # Step 1: download & validate
     try:
-        download_from_drive(FILE_ID, DOWNLOAD_PATH)
+        download_from_drive(FILE_ID_OR_URL, DOWNLOAD_PATH)
     except Exception:
         logging.exception("Download failed. Exiting.")
         return
 
+    # Step 2: read and detect header
     try:
         df = detect_header_and_load(DOWNLOAD_PATH)
     except Exception:
@@ -311,6 +374,7 @@ def main_run_once():
     logging.info("Excel Preview (first 8 rows):\n" + df.head(8).to_string(index=False))
     logging.info("Detected columns: " + ", ".join(list(df.columns)))
 
+    # Step 3: build agreements list
     try:
         agreements = make_agreements_list(df)
         logging.info(f"Parsed {len(agreements)} agreement(s).")
@@ -318,13 +382,14 @@ def main_run_once():
             logging.info("Sample parsed agreements:\n" + "\n".join(
                 [f"  - {a['file']} | {a['expiry_date'].strftime('%Y-%m-%d')} | {a['email']} | name={a.get('name','')}" for a in agreements[:10]]
             ))
-    except KeyError as e:
+    except KeyError:
         logging.error("Could not find expiry column; exiting.")
         return
     except Exception:
         logging.exception("Failed to build agreements list; exiting.")
         return
 
+    # Step 4: optionally send confirmation email for first agreement
     if SEND_CONFIRMATION:
         if agreements:
             first = agreements[0]
@@ -332,10 +397,12 @@ def main_run_once():
         else:
             send_confirmation_email()
 
+    # Step 5: send reminders/alerts
     run_reminders_and_alerts(agreements)
 
 if __name__ == "__main__":
     main_run_once()
+
 
 
 
