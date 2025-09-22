@@ -9,21 +9,24 @@ from pathlib import Path
 import logging
 
 # ------------------ CONFIG ------------------
-SENDER_EMAIL = os.getenv("APP_EMAIL", "ganeshsai@nuevostech.com")
-APP_PASSWORD = os.getenv("APP_PASSWORD", "myrvnqpycpouccwb")
+# Clean environment variables to remove any whitespace/newlines
+SENDER_EMAIL = os.getenv("APP_EMAIL", "ganeshsai@nuevostech.com").strip()
+APP_PASSWORD = os.getenv("APP_PASSWORD", "myrvnqpycpouccwb").strip()
 
 # Use default recipient if none is set
-RECIPIENTS = [os.getenv("RECIPIENT_DEFAULT")] if os.getenv("RECIPIENT_DEFAULT") else ["ganeshsai@nuevostech.com"]
+recipient_default = os.getenv("RECIPIENT_DEFAULT", "").strip()
+RECIPIENTS = [recipient_default] if recipient_default else ["ganeshsai@nuevostech.com"]
 
 # Ensure FILE_ID fallback works even if env var is set empty
-FILE_ID = os.getenv("FILE_ID") or "1aEyOe-C98I_sV0AItEewMFBl1l5R85R2"
+file_id_env = os.getenv("FILE_ID", "").strip()
+FILE_ID = file_id_env if file_id_env else "1aEyOe-C98I_sV0AItEewMFBl1l5R85R2"
 
-DOWNLOAD_PATH = Path(os.getenv("DOWNLOAD_PATH", "Renewal.xlsx"))
-SMTP_HOST = os.getenv("SMTP_HOST", "smtp.gmail.com")
-SMTP_PORT = int(os.getenv("SMTP_PORT", 587))
+DOWNLOAD_PATH = Path(os.getenv("DOWNLOAD_PATH", "Renewal.xlsx").strip())
+SMTP_HOST = os.getenv("SMTP_HOST", "smtp.gmail.com").strip()
+SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
 SEND_CONFIRMATION = False
 
-LOG_FILE = Path(os.getenv("LOG_FILE", "renewal.log"))
+LOG_FILE = Path(os.getenv("LOG_FILE", "renewal.log").strip())
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s | %(levelname)s | %(message)s",
@@ -50,6 +53,12 @@ Note: Your agreement expires in {days_left} day(s)
 """
 
 # ------------------ FUNCTIONS ------------------
+def clean_email_address(email: str) -> str:
+    """Clean email address by removing whitespace and newlines"""
+    if not email:
+        return ""
+    return email.strip().replace('\n', '').replace('\r', '')
+
 def download_from_drive(file_id: str, dest: Path):
     if not file_id.strip():
         raise ValueError("FILE_ID is empty or missing.")
@@ -91,10 +100,24 @@ def detect_header_and_load(path: Path) -> pd.DataFrame:
 
 
 def build_message(sender: str, to_list: list, subject: str, body: str, attachment_path: str = None) -> EmailMessage:
+    # Clean all email addresses and headers
+    clean_sender = clean_email_address(sender)
+    clean_to_list = [clean_email_address(email) for email in to_list if clean_email_address(email)]
+    clean_subject = subject.strip().replace('\n', ' ').replace('\r', ' ')
+    
+    # Validate sender email
+    if not clean_sender:
+        raise ValueError("Sender email is empty or invalid")
+    
+    # Validate recipient list
+    if not clean_to_list:
+        logging.warning("No valid recipient emails found, using default")
+        clean_to_list = [clean_email_address(RECIPIENTS[0])]
+    
     msg = EmailMessage()
-    msg['From'] = sender
-    msg['To'] = ", ".join(to_list)
-    msg['Subject'] = subject
+    msg['From'] = clean_sender
+    msg['To'] = ", ".join(clean_to_list)
+    msg['Subject'] = clean_subject
     msg.set_content(body, subtype='plain', charset='utf-8')
 
     if attachment_path:
@@ -171,7 +194,7 @@ def make_agreements_list(df: pd.DataFrame) -> list:
             if not display_name:
                 display_name = 'Unnamed Agreement'
 
-            email_val = str(row.get(email_col, '')).strip() if email_col else ''
+            email_val = clean_email_address(str(row.get(email_col, ''))) if email_col else ''
             name_val = str(row.get(name_col, '')).strip() if name_col else ''
 
             item = {
@@ -179,7 +202,7 @@ def make_agreements_list(df: pd.DataFrame) -> list:
                 'expiry_date': expiry_dt,
                 'path': str(row.get(path_col, '')).strip() if path_col else '',
                 'status': 'EXPIRES TODAY' if expiry_dt.date() == datetime.now().date() else 'Upcoming',
-                'email': email_val if email_val else RECIPIENTS[0],
+                'email': email_val if email_val else clean_email_address(RECIPIENTS[0]),
                 'name': name_val
             }
             agreements.append(item)
@@ -211,7 +234,11 @@ def send_renewal_reminder(agreement: dict, days_left: int):
         file_path=agreement['path'] if agreement['path'] else "N/A"
     )
     to_addr = [agreement.get('email')] if agreement.get('email') else RECIPIENTS
-    msg = build_message(SENDER_EMAIL, to_addr, subject, body, attachment_path=agreement['path'])
+    
+    # Skip if no valid attachment path (since the original data doesn't have paths)
+    attachment_path = agreement['path'] if agreement['path'] and Path(agreement['path']).exists() else None
+    
+    msg = build_message(SENDER_EMAIL, to_addr, subject, body, attachment_path=attachment_path)
     try:
         send_email(msg)
         logging.info(f"Reminder sent for '{agreement['file']}' ({days_left} days left) to {to_addr}")
@@ -230,7 +257,11 @@ def send_hourly_alert(agreement: dict):
         file_path=agreement['path'] if agreement['path'] else "N/A"
     )
     to_addr = [agreement.get('email')] if agreement.get('email') else RECIPIENTS
-    msg = build_message(SENDER_EMAIL, to_addr, subject, body, attachment_path=agreement['path'])
+    
+    # Skip if no valid attachment path (since the original data doesn't have paths)
+    attachment_path = agreement['path'] if agreement['path'] and Path(agreement['path']).exists() else None
+    
+    msg = build_message(SENDER_EMAIL, to_addr, subject, body, attachment_path=attachment_path)
     try:
         send_email(msg)
         logging.info(f"Hourly alert sent for '{agreement['file']}' to {to_addr}")
@@ -256,6 +287,18 @@ def run_reminders_and_alerts(agreements: list):
 
 
 def main_run_once():
+    # Validate critical configuration first
+    if not SENDER_EMAIL:
+        logging.error("SENDER_EMAIL is not set or empty. Cannot send emails.")
+        return
+    
+    if not APP_PASSWORD:
+        logging.error("APP_PASSWORD is not set or empty. Cannot send emails.")
+        return
+    
+    logging.info(f"Using sender email: {SENDER_EMAIL}")
+    logging.info(f"Using recipients: {RECIPIENTS}")
+    
     try:
         download_from_drive(FILE_ID, DOWNLOAD_PATH)
     except Exception:
