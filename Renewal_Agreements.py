@@ -7,16 +7,18 @@ import ssl
 from email.message import EmailMessage
 from pathlib import Path
 import logging
+from openpyxl import load_workbook
 
 SENDER_EMAIL = os.getenv("APP_EMAIL", "ganeshsai@nuevostech.com")
-APP_PASSWORD = os.getenv("APP_PASSWORD", "myrvnqpycpouccwb")   
+APP_PASSWORD = os.getenv("APP_PASSWORD", "myrvnqpycpouccwb")
 RECIPIENTS = [os.getenv("RECIPIENT_DEFAULT", "")]
 FILE_ID = os.getenv("FILE_ID", "1aEyOe-C98I_sV0AItEewMFBl1l5R85R2")
 DOWNLOAD_PATH = Path(os.getenv("DOWNLOAD_PATH", "Renewal.xlsx"))
 SMTP_HOST = os.getenv("SMTP_HOST", "smtp.gmail.com")
 SMTP_PORT = int(os.getenv("SMTP_PORT", 587))
-SEND_CONFIRMATION = False   
+SEND_CONFIRMATION = False
 LOG_FILE = Path(os.getenv("LOG_FILE", "renewal.log"))
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s | %(levelname)s | %(message)s",
@@ -25,6 +27,7 @@ logging.basicConfig(
         logging.StreamHandler()
     ]
 )
+
 TEMPLATE_SUBJECT = 'Renewed Expiry Date Notification'
 TEMPLATE_BODY = """Hi {Client},
 
@@ -40,19 +43,84 @@ NTQS Digital
 
 Note: Your agreement expires in {days_left} day(s)
 """
+
+def _is_probably_xlsx(path: Path) -> bool:
+    """Quick header check: valid .xlsx files are ZIP files starting with PK.."""
+    try:
+        with open(path, "rb") as f:
+            head = f.read(4)
+        return head.startswith(b"PK")
+    except Exception:
+        return False
+
+def _validate_openpyxl(path: Path) -> None:
+    """Try to open file with openpyxl to ensure it's a real xlsx."""
+    try:
+        # load_workbook will raise if not a real xlsx
+        load_workbook(filename=str(path), read_only=True)
+    except Exception as e:
+        raise ValueError(f"openpyxl failed to open file: {e}")
+
 def download_from_drive(file_id: str, dest: Path):
+    if not file_id or file_id.strip() == "":
+        msg = "FILE_ID is empty. Set FILE_ID environment variable to your Google Drive file id."
+        logging.error(msg)
+        raise ValueError(msg)
+
     url = f"https://drive.google.com/uc?id={file_id}&export=download"
     logging.info(f"Downloading {url} -> {dest} ...")
     try:
-        gdown.download(url, str(dest), quiet=False)
-        logging.info("Download complete.")
-    except Exception as e:
-        logging.exception("Failed to download file from Google Drive.")
+        # ensure destination directory exists
+        dest.parent.mkdir(parents=True, exist_ok=True)
+
+        # gdown will try to handle confirm tokens for large files
+        result = gdown.download(url, str(dest), quiet=False)
+        if not result:
+            raise RuntimeError("gdown returned no result (download failed).")
+
+        if not dest.exists() or dest.stat().st_size == 0:
+            raise ValueError("Downloaded file is empty or missing.")
+
+        # Quick header check: excel xlsx is a zip (PK..)
+        if not _is_probably_xlsx(dest):
+            # read small text snippet to help debug
+            with open(dest, "rb") as f:
+                sample = f.read(2048)
+            # Try to decode for logging; fallback to repr
+            try:
+                text = sample.decode("utf-8", errors="replace")
+            except Exception:
+                text = repr(sample[:500])
+            logging.error("Downloaded file does not appear to be an XLSX (missing PK header).")
+            logging.error(f"First bytes / snippet of downloaded file:\n{text[:1000]}")
+            # keep the file, but raise explicit error for caller
+            raise ValueError("Downloaded file is NOT a valid Excel .xlsx file (likely an HTML error page or wrong file).")
+
+        # Try to open with openpyxl to fully validate
+        try:
+            _validate_openpyxl(dest)
+        except Exception as e:
+            logging.exception("openpyxl validation failed.")
+            raise ValueError("Downloaded file could not be opened by openpyxl; the file may be corrupted or not a true .xlsx.") from e
+
+        logging.info("Download and validation complete. File appears to be a valid .xlsx.")
+    except Exception:
+        logging.exception("Failed to download or validate file from Google Drive.")
         raise
+
 def detect_header_and_load(path: Path) -> pd.DataFrame:
-    raw = pd.read_excel(path, header=None, engine="openpyxl")
+    # try to load raw rows first (header=None)
+    try:
+        raw = pd.read_excel(path, header=None, engine="openpyxl")
+    except Exception as e:
+        logging.exception(f"pd.read_excel(header=None) failed for {path}: {e}")
+        raise
+
     header_idx = None
-    search_tokens = {"expiry", "expiry date", "email", "name", "file", "due", "end", "expires", "expires on", "due date", "client", "contact"}
+    search_tokens = {
+        "expiry", "expiry date", "email", "name", "file", "due", "end", "expires",
+        "expires on", "due date", "client", "contact"
+    }
     max_scan = min(50, len(raw))
     for i in range(max_scan):
         row_vals = [str(x).strip().lower() for x in raw.iloc[i].fillna("")]
@@ -61,13 +129,22 @@ def detect_header_and_load(path: Path) -> pd.DataFrame:
             header_idx = i
             logging.info(f"Detected header at row {header_idx} (0-based). Row values: {row_vals}")
             break
+
     if header_idx is None:
         header_idx = 0
         logging.warning("Could not confidently detect header row; using row 0 as header.")
-    df = pd.read_excel(path, header=header_idx, engine="openpyxl")
+
+    try:
+        df = pd.read_excel(path, header=header_idx, engine="openpyxl")
+    except Exception as e:
+        logging.exception(f"pd.read_excel(header={header_idx}) failed: {e}")
+        raise
+
+    # Normalize column names and drop fully empty rows
     df.columns = [str(c).strip() for c in df.columns]
     df = df.dropna(how="all").reset_index(drop=True)
     return df
+
 def build_message(sender: str, to_list: list, subject: str, body: str, attachment_path: str = None) -> EmailMessage:
     msg = EmailMessage()
     msg['From'] = sender
@@ -85,6 +162,7 @@ def build_message(sender: str, to_list: list, subject: str, body: str, attachmen
         else:
             logging.warning(f"Attachment file not found or invalid: {attachment_path}")
     return msg
+
 def send_email(msg: EmailMessage):
     context = ssl.create_default_context()
     try:
@@ -101,6 +179,7 @@ def send_email(msg: EmailMessage):
     except Exception:
         logging.exception("Failed to send email.")
         raise
+
 def make_agreements_list(df: pd.DataFrame) -> list:
     agreements = []
     expiry_cols = [c for c in df.columns if any(tok in c.lower() for tok in ('expiry','due','end','expires'))]
@@ -108,16 +187,20 @@ def make_agreements_list(df: pd.DataFrame) -> list:
     file_cols = [c for c in df.columns if 'file' in c.lower() or c.lower() == 'name' or 'file name' in c.lower()]
     path_cols = [c for c in df.columns if 'path' in c.lower()]
     name_cols = [c for c in df.columns if any(tok in c.lower() for tok in ('name','client','contact','customer','person'))]
+
     if not expiry_cols:
         msg = f"No expiry-like column found. Columns discovered: {list(df.columns)}"
         logging.error(msg)
         raise KeyError(msg)
+
     expiry_col = expiry_cols[0]
     email_col = email_cols[0] if email_cols else None
     file_col = file_cols[0] if file_cols else None
     path_col = path_cols[0] if path_cols else None
     name_col = name_cols[0] if name_cols else None
+
     logging.info(f"Using expiry column: '{expiry_col}' | email column: '{email_col}' | file column: '{file_col}' | path column: '{path_col}' | name column: '{name_col}'")
+
     for idx, row in df.iterrows():
         try:
             expiry_raw = row.get(expiry_col)
@@ -125,6 +208,7 @@ def make_agreements_list(df: pd.DataFrame) -> list:
             if pd.isna(expiry_dt):
                 logging.debug(f"Skipping row {idx} due to unparseable expiry: {expiry_raw!r}")
                 continue
+
             display_name = ''
             if file_col:
                 display_name = str(row.get(file_col, '')).strip()
@@ -134,8 +218,10 @@ def make_agreements_list(df: pd.DataFrame) -> list:
                 display_name = str(row.get(email_col, '')).strip()
             if not display_name:
                 display_name = 'Unnamed Agreement'
+
             email_val = str(row.get(email_col, '')).strip() if email_col else ''
             name_val = str(row.get(name_col, '')).strip() if name_col else ''
+
             item = {
                 'file': display_name,
                 'expiry_date': expiry_dt,
@@ -149,6 +235,7 @@ def make_agreements_list(df: pd.DataFrame) -> list:
             logging.exception(f"Error parsing row {idx}; skipping.")
             continue
     return agreements
+
 def send_confirmation_email(client_name: str = "Client", to_emails: list = None):
     to_addresses = to_emails if to_emails else RECIPIENTS
     subject = TEMPLATE_SUBJECT
@@ -159,6 +246,7 @@ def send_confirmation_email(client_name: str = "Client", to_emails: list = None)
         logging.info("Renewal confirmation email sent.")
     except Exception:
         logging.exception("Error sending renewal confirmation email.")
+
 def send_renewal_reminder(agreement: dict, days_left: int):
     client_display = agreement.get('name') or agreement.get('email') or "Client"
     subject = f"Renewal Reminder: '{agreement['file']}' Expires Soon"
@@ -175,10 +263,10 @@ def send_renewal_reminder(agreement: dict, days_left: int):
         logging.info(f"Reminder sent for '{agreement['file']}' ({days_left} days left) to {to_addr}")
     except Exception:
         logging.exception(f"Failed to send reminder for '{agreement['file']}'.")
+
 def send_hourly_alert(agreement: dict):
     client_display = agreement.get('name') or agreement.get('email') or "Client"
     subject = f"Renewal Reminder: '{agreement['file']}' Expires Today"
-
     body = TEMPLATE_BODY.format(
         Client=client_display,
         new_expiry=agreement['expiry_date'].strftime('%Y-%m-%d'),
@@ -192,6 +280,7 @@ def send_hourly_alert(agreement: dict):
         logging.info(f"Hourly alert sent for '{agreement['file']}' to {to_addr}")
     except Exception:
         logging.exception(f"Failed to send hourly alert for '{agreement['file']}'.")
+
 def run_reminders_and_alerts(agreements: list):
     today = date.today()
     for agreement in agreements:
@@ -247,5 +336,6 @@ def main_run_once():
 
 if __name__ == "__main__":
     main_run_once()
+
 
 
