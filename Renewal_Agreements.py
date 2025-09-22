@@ -135,8 +135,12 @@ def build_message(sender: str, to_list: list, subject: str, body: str, attachmen
 
 def send_email(msg: EmailMessage):
     if not APP_PASSWORD or APP_PASSWORD.strip() == "":
-        logging.error("APP_PASSWORD is not set. Emails cannot be sent.")
-        return
+        logging.warning("APP_PASSWORD is not set. Skipping email send.")
+        return False
+
+    if not SENDER_EMAIL or SENDER_EMAIL.strip() == "":
+        logging.warning("SENDER_EMAIL is not set. Skipping email send.")
+        return False
 
     context = ssl.create_default_context()
     try:
@@ -147,12 +151,13 @@ def send_email(msg: EmailMessage):
             smtp.login(SENDER_EMAIL, APP_PASSWORD)
             smtp.send_message(msg)
         logging.info(f"Email sent to: {msg['To']} | Subject: {msg['Subject']}")
+        return True
     except smtplib.SMTPAuthenticationError:
-        logging.exception("SMTP authentication error. Check app password or account security settings.")
-        raise
+        logging.error("SMTP authentication error. Check app password or account security settings.")
+        return False
     except Exception:
-        logging.exception("Failed to send email.")
-        raise
+        logging.error("Failed to send email.")
+        return False
 
 
 def make_agreements_list(df: pd.DataFrame) -> list:
@@ -218,10 +223,13 @@ def send_confirmation_email(client_name: str = "Client", to_emails: list = None)
     body = TEMPLATE_BODY.format(Client=client_name, new_expiry="15-09-2025", days_left=0, file_path="N/A")
     msg = build_message(SENDER_EMAIL, to_addresses, subject, body)
     try:
-        send_email(msg)
-        logging.info("Renewal confirmation email sent.")
+        success = send_email(msg)
+        if success:
+            logging.info("Renewal confirmation email sent.")
+        else:
+            logging.info("Renewal confirmation email was not sent due to missing credentials.")
     except Exception:
-        logging.exception("Error sending renewal confirmation email.")
+        logging.error("Error sending renewal confirmation email.")
 
 
 def send_renewal_reminder(agreement: dict, days_left: int):
@@ -240,10 +248,13 @@ def send_renewal_reminder(agreement: dict, days_left: int):
     
     msg = build_message(SENDER_EMAIL, to_addr, subject, body, attachment_path=attachment_path)
     try:
-        send_email(msg)
-        logging.info(f"Reminder sent for '{agreement['file']}' ({days_left} days left) to {to_addr}")
+        success = send_email(msg)
+        if success:
+            logging.info(f"Reminder sent for '{agreement['file']}' ({days_left} days left) to {to_addr}")
+        else:
+            logging.info(f"Reminder for '{agreement['file']}' was not sent due to missing credentials.")
     except Exception:
-        logging.exception(f"Failed to send reminder for '{agreement['file']}'.")
+        logging.error(f"Failed to send reminder for '{agreement['file']}'.")
 
 
 def send_hourly_alert(agreement: dict):
@@ -263,10 +274,13 @@ def send_hourly_alert(agreement: dict):
     
     msg = build_message(SENDER_EMAIL, to_addr, subject, body, attachment_path=attachment_path)
     try:
-        send_email(msg)
-        logging.info(f"Hourly alert sent for '{agreement['file']}' to {to_addr}")
+        success = send_email(msg)
+        if success:
+            logging.info(f"Hourly alert sent for '{agreement['file']}' to {to_addr}")
+        else:
+            logging.info(f"Hourly alert for '{agreement['file']}' was not sent due to missing credentials.")
     except Exception:
-        logging.exception(f"Failed to send hourly alert for '{agreement['file']}'.")
+        logging.error(f"Failed to send hourly alert for '{agreement['file']}'.")
 
 
 def run_reminders_and_alerts(agreements: list):
@@ -289,15 +303,18 @@ def run_reminders_and_alerts(agreements: list):
 def main_run_once():
     # Validate critical configuration first
     if not SENDER_EMAIL:
-        logging.error("SENDER_EMAIL is not set or empty. Cannot send emails.")
-        return
+        logging.warning("SENDER_EMAIL is not set or empty. Email functionality will be disabled.")
     
     if not APP_PASSWORD:
-        logging.error("APP_PASSWORD is not set or empty. Cannot send emails.")
-        return
+        logging.warning("APP_PASSWORD is not set or empty. Email functionality will be disabled.")
     
     logging.info(f"Using sender email: {SENDER_EMAIL}")
     logging.info(f"Using recipients: {RECIPIENTS}")
+    
+    # Check if we can send emails
+    can_send_emails = bool(SENDER_EMAIL and APP_PASSWORD)
+    if not can_send_emails:
+        logging.info("Email sending is disabled due to missing credentials. Will process data only.")
     
     try:
         download_from_drive(FILE_ID, DOWNLOAD_PATH)
@@ -335,13 +352,14 @@ def main_run_once():
         else:
             send_confirmation_email()
 
+    # Process reminders and alerts regardless of email configuration
     run_reminders_and_alerts(agreements)
+    
+    logging.info("Script execution completed successfully.")
 
 
 if __name__ == "__main__":
     main_run_once()
-
-
 
 
 
