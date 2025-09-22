@@ -11,8 +11,7 @@ import logging
 # ------------------ CONFIG ------------------
 # Clean environment variables to remove any whitespace/newlines
 SENDER_EMAIL = os.getenv("APP_EMAIL", "ganeshsai@nuevostech.com").strip()
-APP_PASSWORD = os.getenv("APP_PASSWORD", "").strip()
- APP_PASSWORD= [app_password_default] if app_password_default else ["myrvnqpycpouccwb"]
+APP_PASSWORD = os.getenv("APP_PASSWORD", "myrvnqpycpouccwb").strip()
 
 
 # Use default recipient if none is set
