@@ -1,8 +1,8 @@
 name: Renewal Agreements Automation
 on:
-  workflow_dispatch:    # Allows manual trigger from GitHub UI
+  workflow_dispatch:    
   schedule:
-    - cron: '0 6 * * *' # Runs every day at 6:00 UTC (adjust as needed)
+    - cron: '0 6 * * *' 
 jobs:
   renewal-job:
     runs-on: ubuntu-latest
