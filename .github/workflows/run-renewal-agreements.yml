@@ -1,4 +1,3 @@
-```yaml
 name: Renewal Agreements Automation
 
 on:
@@ -33,4 +32,3 @@ jobs:
           SMTP_PORT: 587
           LOG_FILE: renewal.log
         run: python Renewal_Agreements.py
-```
