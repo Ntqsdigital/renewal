@@ -1,0 +1,29 @@
+name: Renewal Agreements Automation
+on:
+  workflow_dispatch:    # Allows manual trigger from GitHub UI
+  schedule:
+    - cron: '0 6 * * *' # Runs every day at 6:00 UTC (adjust as needed)
+jobs:
+  renewal-job:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+      - name: Install dependencies
+        run: |
+          pip install pandas openpyxl gdown
+      - name: Run Renewal Agreements script
+        env:
+          APP_EMAIL: ${{ secrets.APP_EMAIL }}
+          APP_PASSWORD: ${{ secrets.APP_PASSWORD }}
+          RECIPIENT_DEFAULT: ${{ secrets.RECIPIENT_DEFAULT }}
+          FILE_ID: ${{ secrets.FILE_ID }}
+          DOWNLOAD_PATH: Renewal.xlsx
+          SMTP_HOST: smtp.gmail.com
+          SMTP_PORT: 587
+          LOG_FILE: renewal.log
+        run: python Renewal_Agreements.py
