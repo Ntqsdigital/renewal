@@ -8,6 +8,7 @@ from email.message import EmailMessage
 from pathlib import Path
 import logging
 
+# Environment/config
 SENDER_EMAIL = os.getenv("APP_EMAIL", "ganeshsai@nuevostech.com")
 APP_PASSWORD = os.getenv("APP_PASSWORD", "myrvnqpycpouccwb")   
 RECIPIENTS = [os.getenv("RECIPIENT_DEFAULT", "")]
@@ -17,6 +18,7 @@ SMTP_HOST = os.getenv("SMTP_HOST", "smtp.gmail.com")
 SMTP_PORT = int(os.getenv("SMTP_PORT", 587))
 SEND_CONFIRMATION = False   
 LOG_FILE = Path(os.getenv("LOG_FILE", "renewal.log"))
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s | %(levelname)s | %(message)s",
@@ -25,6 +27,7 @@ logging.basicConfig(
         logging.StreamHandler()
     ]
 )
+
 TEMPLATE_SUBJECT = 'Renewed Expiry Date Notification'
 TEMPLATE_BODY = """Hi {Client},
 
@@ -40,6 +43,7 @@ NTQS Digital
 
 Note: Your agreement expires in {days_left} day(s)
 """
+
 def download_from_drive(file_id: str, dest: Path):
     url = f"https://drive.google.com/uc?id={file_id}&export=download"
     logging.info(f"Downloading {url} -> {dest} ...")
@@ -49,8 +53,22 @@ def download_from_drive(file_id: str, dest: Path):
     except Exception as e:
         logging.exception("Failed to download file from Google Drive.")
         raise
+
 def detect_header_and_load(path: Path) -> pd.DataFrame:
-    raw = pd.read_excel(path, header=None, engine="openpyxl")
+    logging.info(f"Attempting to read file: {path}")
+    if not path.exists():
+        logging.error(f"File does not exist: {path}")
+        raise FileNotFoundError(f"File does not exist: {path}")
+    file_size = path.stat().st_size
+    logging.info(f"Downloaded file size: {file_size} bytes, Suffix: {path.suffix}")
+    if file_size < 1000:
+        logging.error("Downloaded file is likely too small to be a valid Excel file. Check your Drive link and permissions.")
+        raise ValueError("Downloaded file is not a valid Excel file.")
+    try:
+        raw = pd.read_excel(path, header=None, engine="openpyxl")
+    except Exception as e:
+        logging.error(f"Error reading Excel file: {e}")
+        raise
     header_idx = None
     search_tokens = {"expiry", "expiry date", "email", "name", "file", "due", "end", "expires", "expires on", "due date", "client", "contact"}
     max_scan = min(50, len(raw))
@@ -68,6 +86,7 @@ def detect_header_and_load(path: Path) -> pd.DataFrame:
     df.columns = [str(c).strip() for c in df.columns]
     df = df.dropna(how="all").reset_index(drop=True)
     return df
+
 def build_message(sender: str, to_list: list, subject: str, body: str, attachment_path: str = None) -> EmailMessage:
     msg = EmailMessage()
     msg['From'] = sender
@@ -85,6 +104,7 @@ def build_message(sender: str, to_list: list, subject: str, body: str, attachmen
         else:
             logging.warning(f"Attachment file not found or invalid: {attachment_path}")
     return msg
+
 def send_email(msg: EmailMessage):
     context = ssl.create_default_context()
     try:
@@ -98,9 +118,10 @@ def send_email(msg: EmailMessage):
     except smtplib.SMTPAuthenticationError:
         logging.exception("SMTP authentication error. Check app password or account security settings.")
         raise
-    except Exception:
-        logging.exception("Failed to send email.")
+    except Exception as e:
+        logging.exception(f"Failed to send email: {e}")
         raise
+
 def make_agreements_list(df: pd.DataFrame) -> list:
     agreements = []
     expiry_cols = [c for c in df.columns if any(tok in c.lower() for tok in ('expiry','due','end','expires'))]
@@ -149,6 +170,7 @@ def make_agreements_list(df: pd.DataFrame) -> list:
             logging.exception(f"Error parsing row {idx}; skipping.")
             continue
     return agreements
+
 def send_confirmation_email(client_name: str = "Client", to_emails: list = None):
     to_addresses = to_emails if to_emails else RECIPIENTS
     subject = TEMPLATE_SUBJECT
@@ -159,6 +181,7 @@ def send_confirmation_email(client_name: str = "Client", to_emails: list = None)
         logging.info("Renewal confirmation email sent.")
     except Exception:
         logging.exception("Error sending renewal confirmation email.")
+
 def send_renewal_reminder(agreement: dict, days_left: int):
     client_display = agreement.get('name') or agreement.get('email') or "Client"
     subject = f"Renewal Reminder: '{agreement['file']}' Expires Soon"
@@ -175,10 +198,10 @@ def send_renewal_reminder(agreement: dict, days_left: int):
         logging.info(f"Reminder sent for '{agreement['file']}' ({days_left} days left) to {to_addr}")
     except Exception:
         logging.exception(f"Failed to send reminder for '{agreement['file']}'.")
+
 def send_hourly_alert(agreement: dict):
     client_display = agreement.get('name') or agreement.get('email') or "Client"
     subject = f"Renewal Reminder: '{agreement['file']}' Expires Today"
-
     body = TEMPLATE_BODY.format(
         Client=client_display,
         new_expiry=agreement['expiry_date'].strftime('%Y-%m-%d'),
@@ -192,6 +215,7 @@ def send_hourly_alert(agreement: dict):
         logging.info(f"Hourly alert sent for '{agreement['file']}' to {to_addr}")
     except Exception:
         logging.exception(f"Failed to send hourly alert for '{agreement['file']}'.")
+
 def run_reminders_and_alerts(agreements: list):
     today = date.today()
     for agreement in agreements:
@@ -205,6 +229,7 @@ def run_reminders_and_alerts(agreements: list):
     logging.info(f"{len(todays)} agreement(s) expiring today. Sending one-shot alerts.")
     for agreement in todays:
         send_hourly_alert(agreement)
+
 def main_run_once():
     try:
         download_from_drive(FILE_ID, DOWNLOAD_PATH)
