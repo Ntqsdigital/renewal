@@ -54,6 +54,12 @@ def download_from_drive(file_id: str, dest: Path):
         logging.exception("Failed to download file from Google Drive.")
         raise
 
+def is_excel_file(path):
+    # ZIP files start with 'PK'
+    with open(path, "rb") as f:
+        sig = f.read(2)
+    return sig == b"PK"
+
 def detect_header_and_load(path: Path) -> pd.DataFrame:
     logging.info(f"Attempting to read file: {path}")
     if not path.exists():
@@ -61,8 +67,12 @@ def detect_header_and_load(path: Path) -> pd.DataFrame:
         raise FileNotFoundError(f"File does not exist: {path}")
     file_size = path.stat().st_size
     logging.info(f"Downloaded file size: {file_size} bytes, Suffix: {path.suffix}")
-    if file_size < 1000:
-        logging.error("Downloaded file is likely too small to be a valid Excel file. Check your Drive link and permissions.")
+    if not is_excel_file(path):
+        logging.error("Downloaded file is NOT a valid Excel .xlsx file (ZIP format).")
+        # Optionally print first few lines for debugging:
+        with open(path, "r", errors="ignore") as f:
+            preview = f.read(300)
+            logging.error(f"File preview:\n{preview}")
         raise ValueError("Downloaded file is not a valid Excel file.")
     try:
         raw = pd.read_excel(path, header=None, engine="openpyxl")
