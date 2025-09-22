@@ -7,6 +7,12 @@ import ssl
 from email.message import EmailMessage
 from pathlib import Path
 import logging
+import getpass
+
+user = input("Enter User ID: ")
+pwd = getpass.getpass("Enter Password: ")
+
+print(f"User: {user}, Password securely entered")
 def _get_env_fallback(key: str, fallback: str = "") -> str:
     raw = os.getenv(key)
     if raw is None:
