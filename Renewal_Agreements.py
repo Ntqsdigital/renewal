@@ -1,217 +1,366 @@
 import os
 import gdown
 import pandas as pd
-from datetime import datetime
+from datetime import datetime, date
 import smtplib
 import ssl
 from email.message import EmailMessage
 from pathlib import Path
 import logging
 
-# ------------- CONFIG -------------
-# Environment variables
-SENDER_EMAIL = os.getenv('APP_EMAIL', '').strip()
-APP_PASSWORD = os.getenv('APP_PASSWORD', '').strip()
-RECIPIENT_DEFAULT = os.getenv('RECIPIENT_DEFAULT', 'ganeshsai@nuevostech.com').strip()
-FILE_ID = os.getenv('FILE_ID', '1aEyOe-C98I_sV0AItEewMFBl1l5R85R2').strip()
-DOWNLOAD_PATH = Path(os.getenv('DOWNLOAD_PATH', 'Renewal.xlsx'))
-SMTP_HOST = os.getenv('SMTP_HOST', 'smtp.gmail.com')
-SMTP_PORT = int(os.getenv('SMTP_PORT', '587'))
-LOG_FILE = Path(os.getenv('LOG_FILE', 'renewal.log'))
+# ------------------ CONFIG ------------------
+# Clean environment variables to remove any whitespace/newlines
+SENDER_EMAIL = os.getenv("APP_EMAIL", "ganeshsai@nuevostech.com").strip()
+APP_PASSWORD = os.getenv("APP_PASSWORD", "myrvnqpycpouccwb").strip()
 
-# Setup logging to file and console
+
+# Use default recipient if none is set
+recipient_default = os.getenv("RECIPIENT_DEFAULT", "").strip()
+RECIPIENTS = [recipient_default] if recipient_default else ["ganeshsai@nuevostech.com"]
+
+# Ensure FILE_ID fallback works even if env var is set empty
+file_id_env = os.getenv("FILE_ID", "").strip()
+FILE_ID = file_id_env if file_id_env else "1aEyOe-C98I_sV0AItEewMFBl1l5R85R2"
+
+DOWNLOAD_PATH = Path(os.getenv("DOWNLOAD_PATH", "Renewal.xlsx").strip())
+SMTP_HOST = os.getenv("SMTP_HOST", "smtp.gmail.com").strip()
+SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
+SEND_CONFIRMATION = False
+
+LOG_FILE = Path(os.getenv("LOG_FILE", "renewal.log").strip())
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s | %(levelname)s | %(message)s',
+    format="%(asctime)s | %(levelname)s | %(message)s",
     handlers=[
-        logging.FileHandler(LOG_FILE, encoding='utf-8'),
+        logging.FileHandler(LOG_FILE, encoding="utf-8"),
         logging.StreamHandler()
     ]
 )
 
-# ------------- FUNCTIONS -------------
+TEMPLATE_SUBJECT = 'Renewed Expiry Date Notification'
+TEMPLATE_BODY = """Hi {Client},
 
-def download_file_from_drive(file_id: str, dest_path: Path):
-    if not file_id:
-        logging.error("Google Drive FILE_ID is not set.")
-        raise ValueError("Google Drive FILE_ID is required.")
-    url = f'https://drive.google.com/uc?id={file_id}&export=download'
-    logging.info(f"Downloading {url} to {dest_path} ...")
-    try:
-        gdown.download(url, str(dest_path), quiet=False)
-        if not dest_path.exists() or dest_path.stat().st_size == 0:
-            raise FileNotFoundError(f"Download failed or file empty: {dest_path}")
-        logging.info("Download completed successfully.")
-    except Exception as e:
-        logging.exception("Failed to download the file.")
-        raise e
+Your product's expiry date has been renewed.
+New Expiry Date: {new_expiry}
 
-def detect_header_row(df_raw: pd.DataFrame) -> int:
-    """Try to detect header row index by scanning first 50 rows for common keywords"""
-    keywords = ['expiry', 'email', 'name', 'file', 'due', 'end', 'expires', 'contact', 'client']
-    max_rows = min(50, len(df_raw))
-    for i in range(max_rows):
-        row_str = " ".join(str(x).lower() for x in df_raw.iloc[i].fillna(''))
-        if any(kw in row_str for kw in keywords):
-            logging.info(f"Detected header row at index {i} with values: {df_raw.iloc[i].tolist()}")
-            return i
-    logging.warning("Header row could not be confidently detected. Using first row as header.")
-    return 0
+• Attached File Path: {file_path}
 
-def load_excel_with_header(filepath: Path) -> pd.DataFrame:
-    raw_df = pd.read_excel(filepath, header=None, engine='openpyxl')
-    header_idx = detect_header_row(raw_df)
-    df = pd.read_excel(filepath, header=header_idx, engine='openpyxl')
-    df.columns = [str(c).strip() for c in df.columns]
-    df.dropna(how='all', inplace=True)
-    df.reset_index(drop=True, inplace=True)
-    logging.info(f"Excel loaded with header row {header_idx}, columns: {list(df.columns)}")
-    return df
-
-def find_column(columns, keywords):
-    for kw in keywords:
-        for col in columns:
-            if kw.lower() in col.lower():
-                return col
-    return None
-
-def parse_agreements(df: pd.DataFrame):
-    # Find relevant columns
-    expiry_col = find_column(df.columns, ['expiry', 'due', 'end', 'expires'])
-    email_col = find_column(df.columns, ['email', 'contact'])
-    name_col = find_column(df.columns, ['name', 'client', 'person'])
-    file_col = find_column(df.columns, ['file', 'filename'])
-    path_col = find_column(df.columns, ['path'])
-
-    if not expiry_col:
-        logging.error("No expiry date column found. Exiting.")
-        raise KeyError("Expiry date column required.")
-
-    agreements = []
-    for idx, row in df.iterrows():
-        try:
-            expiry_raw = row[expiry_col]
-            expiry_date = pd.to_datetime(expiry_raw, errors='coerce')
-            if pd.isna(expiry_date):
-                logging.debug(f"Skipping row {idx} due to invalid expiry date: {expiry_raw}")
-                continue
-
-            agreement_name = str(row[file_col] if file_col and pd.notna(row[file_col]) else
-                                 row[name_col] if name_col and pd.notna(row[name_col]) else
-                                 f"Agreement #{idx+1}").strip()
-
-            email = str(row[email_col]).strip() if email_col and pd.notna(row[email_col]) else RECIPIENT_DEFAULT
-            email = email.replace('\n', '').replace('\r', '')
-
-            path = str(row[path_col]).strip() if path_col and pd.notna(row[path_col]) else ''
-
-            agreements.append({
-                'name': agreement_name,
-                'expiry_date': expiry_date,
-                'email': email,
-                'path': path
-            })
-        except Exception as e:
-            logging.warning(f"Skipping row {idx} due to error: {e}")
-
-    logging.info(f"Parsed {len(agreements)} agreements successfully.")
-    return agreements
-
-def build_email_message(sender, recipients, subject, body, attachment_path=None):
-    msg = EmailMessage()
-    msg['From'] = sender
-    msg['To'] = ', '.join(recipients)
-    msg['Subject'] = subject
-    msg.set_content(body)
-
-    if attachment_path and Path(attachment_path).exists():
-        with open(attachment_path, 'rb') as f:
-            file_data = f.read()
-            file_name = Path(attachment_path).name
-            msg.add_attachment(file_data, maintype='application', subtype='octet-stream', filename=file_name)
-        logging.info(f"Attached file {file_name} to email.")
-    elif attachment_path:
-        logging.warning(f"Attachment path provided but file not found: {attachment_path}")
-
-    return msg
-
-def send_email(msg: EmailMessage):
-    if not SENDER_EMAIL or not APP_PASSWORD:
-        logging.warning("Email credentials not set. Skipping email sending.")
-        return False
-
-    try:
-        context = ssl.create_default_context()
-        with smtplib.SMTP(SMTP_HOST, SMTP_PORT) as server:
-            server.starttls(context=context)
-            server.login(SENDER_EMAIL, APP_PASSWORD)
-            server.send_message(msg)
-        logging.info(f"Email sent to {msg['To']}")
-        return True
-    except smtplib.SMTPAuthenticationError:
-        logging.error("SMTP Authentication failed. Check your email and app password.")
-    except Exception as e:
-        logging.error(f"Failed to send email: {e}")
-    return False
-
-# ------------- MAIN LOGIC -------------
-
-def main():
-    logging.info("Script started.")
-
-    # Download the latest renewal Excel
-    try:
-        download_file_from_drive(FILE_ID, DOWNLOAD_PATH)
-    except Exception as e:
-        logging.error(f"Cannot proceed without Excel file: {e}")
-        return
-
-    # Load and parse Excel
-    try:
-        df = load_excel_with_header(DOWNLOAD_PATH)
-        agreements = parse_agreements(df)
-    except Exception as e:
-        logging.error(f"Error parsing Excel: {e}")
-        return
-
-    # For each agreement expiring today or soon, send email
-    today = datetime.now().date()
-    for ag in agreements:
-        days_left = (ag['expiry_date'].date() - today).days
-        if days_left < 0:
-            continue  # already expired, ignore or handle differently
-        if days_left > 7:
-            continue  # ignore far future expiry for now
-
-        # Compose email
-        subject = f"Expiry Reminder for {ag['name']}"
-        body = f"""Hi {ag['name']},
-
-Your agreement expires in {days_left} day(s) on {ag['expiry_date'].date()}.
-
-Please find the details attached.
+Please take note and let us know if you have any questions.
 
 Regards,
-Your Team
+NTQS Digital
+
+Note: Your agreement expires in {days_left} day(s)
 """
-        msg = build_email_message(
-            sender=SENDER_EMAIL or RECIPIENT_DEFAULT,
-            recipients=[ag['email']],
-            subject=subject,
-            body=body,
-            attachment_path=ag['path'] if ag['path'] else None
-        )
 
-        # Send email if credentials are set
-        if send_email(msg):
-            logging.info(f"Reminder sent for agreement '{ag['name']}' to {ag['email']}")
+# ------------------ FUNCTIONS ------------------
+def clean_email_address(email: str) -> str:
+    """Clean email address by removing whitespace and newlines"""
+    if not email:
+        return ""
+    return email.strip().replace('\n', '').replace('\r', '')
+
+def download_from_drive(file_id: str, dest: Path):
+    if not file_id.strip():
+        raise ValueError("FILE_ID is empty or missing.")
+
+    url = f"https://drive.google.com/uc?id={file_id}&export=download"
+    logging.info(f"Downloading {url} -> {dest} ...")
+    try:
+        gdown.download(url, str(dest), quiet=False)
+        if not dest.exists() or dest.stat().st_size == 0:
+            raise FileNotFoundError(f"Download failed or file is empty: {dest}")
+        logging.info("Download complete.")
+    except Exception:
+        logging.exception("Failed to download file from Google Drive.")
+        raise
+
+
+def detect_header_and_load(path: Path) -> pd.DataFrame:
+    raw = pd.read_excel(path, header=None, engine="openpyxl")
+    header_idx = None
+    search_tokens = {"expiry", "expiry date", "email", "name", "file", "due", "end", "expires", "expires on", "due date", "client", "contact"}
+    max_scan = min(50, len(raw))
+
+    for i in range(max_scan):
+        row_vals = [str(x).strip().lower() for x in raw.iloc[i].fillna("")]
+        combined = " ".join(row_vals)
+        if any(tok in combined for tok in search_tokens):
+            header_idx = i
+            logging.info(f"Detected header at row {header_idx} (0-based). Row values: {row_vals}")
+            break
+
+    if header_idx is None:
+        header_idx = 0
+        logging.warning("Could not confidently detect header row; using row 0 as header.")
+
+    df = pd.read_excel(path, header=header_idx, engine="openpyxl")
+    df.columns = [str(c).strip() for c in df.columns]
+    df = df.dropna(how="all").reset_index(drop=True)
+    return df
+
+
+def build_message(sender: str, to_list: list, subject: str, body: str, attachment_path: str = None) -> EmailMessage:
+    # Clean all email addresses and headers
+    clean_sender = clean_email_address(sender)
+    clean_to_list = [clean_email_address(email) for email in to_list if clean_email_address(email)]
+    clean_subject = subject.strip().replace('\n', ' ').replace('\r', ' ')
+    
+    # Validate sender email
+    if not clean_sender:
+        raise ValueError("Sender email is empty or invalid")
+    
+    # Validate recipient list
+    if not clean_to_list:
+        logging.warning("No valid recipient emails found, using default")
+        clean_to_list = [clean_email_address(RECIPIENTS[0])]
+    
+    msg = EmailMessage()
+    msg['From'] = clean_sender
+    msg['To'] = ", ".join(clean_to_list)
+    msg['Subject'] = clean_subject
+    msg.set_content(body, subtype='plain', charset='utf-8')
+
+    if attachment_path:
+        path = Path(attachment_path)
+        if path.exists() and path.is_file():
+            with open(path, 'rb') as f:
+                file_data = f.read()
+                maintype, subtype = 'application', 'octet-stream'
+                msg.add_attachment(file_data, maintype=maintype, subtype=subtype, filename=path.name)
+                logging.info(f"Attached file '{path.name}' to email.")
         else:
-            logging.info(f"Skipped sending reminder for '{ag['name']}' due to missing credentials.")
+            logging.warning(f"Attachment file not found or invalid: {attachment_path}")
+    return msg
 
-    logging.info("Script execution finished.")
+
+def send_email(msg: EmailMessage):
+    if not APP_PASSWORD or APP_PASSWORD.strip() == "":
+        logging.warning("APP_PASSWORD is not set. Skipping email send.")
+        return False
+
+    if not SENDER_EMAIL or SENDER_EMAIL.strip() == "":
+        logging.warning("SENDER_EMAIL is not set. Skipping email send.")
+        return False
+
+    context = ssl.create_default_context()
+    try:
+        with smtplib.SMTP(SMTP_HOST, SMTP_PORT) as smtp:
+            smtp.ehlo()
+            smtp.starttls(context=context)
+            smtp.ehlo()
+            smtp.login(SENDER_EMAIL, APP_PASSWORD)
+            smtp.send_message(msg)
+        logging.info(f"Email sent to: {msg['To']} | Subject: {msg['Subject']}")
+        return True
+    except smtplib.SMTPAuthenticationError:
+        logging.error("SMTP authentication error. Check app password or account security settings.")
+        return False
+    except Exception:
+        logging.error("Failed to send email.")
+        return False
+
+
+def make_agreements_list(df: pd.DataFrame) -> list:
+    agreements = []
+    expiry_cols = [c for c in df.columns if any(tok in c.lower() for tok in ('expiry','due','end','expires'))]
+    email_cols = [c for c in df.columns if 'email' in c.lower()]
+    file_cols = [c for c in df.columns if 'file' in c.lower() or c.lower() == 'name' or 'file name' in c.lower()]
+    path_cols = [c for c in df.columns if 'path' in c.lower()]
+    name_cols = [c for c in df.columns if any(tok in c.lower() for tok in ('name','client','contact','customer','person'))]
+
+    if not expiry_cols:
+        msg = f"No expiry-like column found. Columns discovered: {list(df.columns)}"
+        logging.error(msg)
+        raise KeyError(msg)
+
+    expiry_col = expiry_cols[0]
+    email_col = email_cols[0] if email_cols else None
+    file_col = file_cols[0] if file_cols else None
+    path_col = path_cols[0] if path_cols else None
+    name_col = name_cols[0] if name_cols else None
+
+    logging.info(f"Using expiry column: '{expiry_col}' | email column: '{email_col}' | file column: '{file_col}' | path column: '{path_col}' | name column: '{name_col}'")
+
+    for idx, row in df.iterrows():
+        try:
+            expiry_raw = row.get(expiry_col)
+            expiry_dt = pd.to_datetime(expiry_raw, errors='coerce', dayfirst=True)
+            if pd.isna(expiry_dt):
+                logging.debug(f"Skipping row {idx} due to unparseable expiry: {expiry_raw!r}")
+                continue
+
+            display_name = ''
+            if file_col:
+                display_name = str(row.get(file_col, '')).strip()
+            if not display_name and name_col:
+                display_name = str(row.get(name_col, '')).strip()
+            if not display_name and email_col:
+                display_name = str(row.get(email_col, '')).strip()
+            if not display_name:
+                display_name = 'Unnamed Agreement'
+
+            email_val = clean_email_address(str(row.get(email_col, ''))) if email_col else ''
+            name_val = str(row.get(name_col, '')).strip() if name_col else ''
+
+            item = {
+                'file': display_name,
+                'expiry_date': expiry_dt,
+                'path': str(row.get(path_col, '')).strip() if path_col else '',
+                'status': 'EXPIRES TODAY' if expiry_dt.date() == datetime.now().date() else 'Upcoming',
+                'email': email_val if email_val else clean_email_address(RECIPIENTS[0]),
+                'name': name_val
+            }
+            agreements.append(item)
+        except Exception:
+            logging.exception(f"Error parsing row {idx}; skipping.")
+            continue
+    return agreements
+
+
+def send_confirmation_email(client_name: str = "Client", to_emails: list = None):
+    to_addresses = to_emails if to_emails else RECIPIENTS
+    subject = TEMPLATE_SUBJECT
+    body = TEMPLATE_BODY.format(Client=client_name, new_expiry="15-09-2025", days_left=0, file_path="N/A")
+    msg = build_message(SENDER_EMAIL, to_addresses, subject, body)
+    try:
+        success = send_email(msg)
+        if success:
+            logging.info("Renewal confirmation email sent.")
+        else:
+            logging.info("Renewal confirmation email was not sent due to missing credentials.")
+    except Exception:
+        logging.error("Error sending renewal confirmation email.")
+
+
+def send_renewal_reminder(agreement: dict, days_left: int):
+    client_display = agreement.get('name') or agreement.get('email') or "Client"
+    subject = f"Renewal Reminder: '{agreement['file']}' Expires Soon"
+    body = TEMPLATE_BODY.format(
+        Client=client_display,
+        new_expiry=agreement['expiry_date'].strftime('%Y-%m-%d'),
+        days_left=days_left,
+        file_path=agreement['path'] if agreement['path'] else "N/A"
+    )
+    to_addr = [agreement.get('email')] if agreement.get('email') else RECIPIENTS
+    
+    # Skip if no valid attachment path (since the original data doesn't have paths)
+    attachment_path = agreement['path'] if agreement['path'] and Path(agreement['path']).exists() else None
+    
+    msg = build_message(SENDER_EMAIL, to_addr, subject, body, attachment_path=attachment_path)
+    try:
+        success = send_email(msg)
+        if success:
+            logging.info(f"Reminder sent for '{agreement['file']}' ({days_left} days left) to {to_addr}")
+        else:
+            logging.info(f"Reminder for '{agreement['file']}' was not sent due to missing credentials.")
+    except Exception:
+        logging.error(f"Failed to send reminder for '{agreement['file']}'.")
+
+
+def send_hourly_alert(agreement: dict):
+    client_display = agreement.get('name') or agreement.get('email') or "Client"
+    subject = f"Renewal Reminder: '{agreement['file']}' Expires Today"
+
+    body = TEMPLATE_BODY.format(
+        Client=client_display,
+        new_expiry=agreement['expiry_date'].strftime('%Y-%m-%d'),
+        days_left=0,
+        file_path=agreement['path'] if agreement['path'] else "N/A"
+    )
+    to_addr = [agreement.get('email')] if agreement.get('email') else RECIPIENTS
+    
+    # Skip if no valid attachment path (since the original data doesn't have paths)
+    attachment_path = agreement['path'] if agreement['path'] and Path(agreement['path']).exists() else None
+    
+    msg = build_message(SENDER_EMAIL, to_addr, subject, body, attachment_path=attachment_path)
+    try:
+        success = send_email(msg)
+        if success:
+            logging.info(f"Hourly alert sent for '{agreement['file']}' to {to_addr}")
+        else:
+            logging.info(f"Hourly alert for '{agreement['file']}' was not sent due to missing credentials.")
+    except Exception:
+        logging.error(f"Failed to send hourly alert for '{agreement['file']}'.")
+
+
+def run_reminders_and_alerts(agreements: list):
+    today = date.today()
+    for agreement in agreements:
+        days_left = (agreement['expiry_date'].date() - today).days
+        if 1 <= days_left <= 5:
+            send_renewal_reminder(agreement, days_left)
+
+    todays = [a for a in agreements if a['expiry_date'].date() == today]
+    if not todays:
+        logging.info("No agreements expiring today; skipping hourly alerts.")
+        return
+
+    logging.info(f"{len(todays)} agreement(s) expiring today. Sending one-shot alerts.")
+    for agreement in todays:
+        send_hourly_alert(agreement)
+
+
+def main_run_once():
+    # Validate critical configuration first
+    if not SENDER_EMAIL:
+        logging.warning("SENDER_EMAIL is not set or empty. Email functionality will be disabled.")
+    
+    if not APP_PASSWORD:
+        logging.warning("APP_PASSWORD is not set or empty. Email functionality will be disabled.")
+    
+    logging.info(f"Using sender email: {SENDER_EMAIL}")
+    logging.info(f"Using recipients: {RECIPIENTS}")
+    
+    # Check if we can send emails
+    can_send_emails = bool(SENDER_EMAIL and APP_PASSWORD)
+    if not can_send_emails:
+        logging.info("Email sending is disabled due to missing credentials. Will process data only.")
+    
+    try:
+        download_from_drive(FILE_ID, DOWNLOAD_PATH)
+    except Exception:
+        logging.exception("Download failed. Exiting.")
+        return
+
+    try:
+        df = detect_header_and_load(DOWNLOAD_PATH)
+    except Exception:
+        logging.exception("Reading Excel failed. Exiting.")
+        return
+
+    logging.info("Excel Preview (first 8 rows):\n" + df.head(8).to_string(index=False))
+    logging.info("Detected columns: " + ", ".join(list(df.columns)))
+
+    try:
+        agreements = make_agreements_list(df)
+        logging.info(f"Parsed {len(agreements)} agreement(s).")
+        if agreements:
+            logging.info("Sample parsed agreements:\n" + "\n".join(
+                [f"  - {a['file']} | {a['expiry_date'].strftime('%Y-%m-%d')} | {a['email']} | name={a.get('name','')}" for a in agreements[:10]]
+            ))
+    except KeyError:
+        logging.error("Could not find expiry column; exiting.")
+        return
+    except Exception:
+        logging.exception("Failed to build agreements list; exiting.")
+        return
+
+    if SEND_CONFIRMATION:
+        if agreements:
+            first = agreements[0]
+            send_confirmation_email(client_name=first.get('name') or first.get('email'), to_emails=[first.get('email')])
+        else:
+            send_confirmation_email()
+
+    # Process reminders and alerts regardless of email configuration
+    run_reminders_and_alerts(agreements)
+    
+    logging.info("Script execution completed successfully.")
+
 
 if __name__ == "__main__":
-    main()
+    main_run_once() 
 
 
 
