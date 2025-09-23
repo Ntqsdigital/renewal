@@ -1,34 +1,42 @@
-name: Renewal Agreements Automation
+name: Renewal Agreements
 
 on:
-  workflow_dispatch:    
   schedule:
-    - cron: '0 6 * * *' 
+    - cron: '0 * * * *'  
+  workflow_dispatch:
 
 jobs:
-  renewal-job:
+  renewal:
     runs-on: ubuntu-latest
+    env:
+      APP_EMAIL: ${{ secrets.APP_EMAIL }}
+      APP_PASSWORD: ${{ secrets.APP_PASSWORD }}
+      RECIPIENT_DEFAULT: ${{ secrets.RECIPIENT_DEFAULT }}
+      FILE_ID: ${{ secrets.FILE_ID }}    
+      DOWNLOAD_PATH: Renewal.xlsx
+      SMTP_HOST: smtp.gmail.com
+      SMTP_PORT: "587"
+      LOG_FILE: renewal.log
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v3
 
-      - name: Set up Python
+      - name: Setup Python
         uses: actions/setup-python@v4
         with:
-          python-version: '3.11'
+          python-version: '3.10'        
 
       - name: Install dependencies
         run: |
-          pip install pandas openpyxl gdown
+          python -m pip install --upgrade pip
+          pip install gdown pandas openpyxl
 
-      - name: Run Renewal Agreements script
-        env:
-          APP_EMAIL: ${{ secrets.APP_EMAIL }}
-          APP_PASSWORD: ${{ secrets.APP_PASSWORD }}
-          RECIPIENT_DEFAULT: ${{ secrets.RECIPIENT_DEFAULT }}
-          FILE_ID: ${{ secrets.FILE_ID }}
-          DOWNLOAD_PATH: Renewal.xlsx
-          SMTP_HOST: smtp.gmail.com
-          SMTP_PORT: 587
-          LOG_FILE: renewal.log
-        run: python Renewal_Agreements.py
+      - name: Debug env vars
+        run: |
+          echo "APP_EMAIL: $APP_EMAIL"
+          echo "APP_PASSWORD is set: ${APP_PASSWORD:+yes}"
+          echo "RECIPIENT_DEFAULT: $RECIPIENT_DEFAULT"
+
+      - name: Run renewal script
+        run: python3 Renewal_Agreements.py
+
