@@ -8,16 +8,12 @@ import ssl
 from email.message import EmailMessage
 from pathlib import Path
 import logging
-
-# === Safe Credential Input ===
 def _get_env_fallback(key: str, fallback: str = "") -> str:
     raw = os.getenv(key)
     if raw is None:
         return fallback
     trimmed = str(raw).strip()
     return trimmed if trimmed else fallback
-
-# Optional local testing (interactive input)
 if sys.stdin.isatty():
     try:
         import getpass
@@ -28,8 +24,6 @@ if sys.stdin.isatty():
         print(f"User: {user}, Password securely entered")
     except Exception as e:
         print(f"Input error: {e}")
-
-# === Environment Config ===
 SENDER_EMAIL = _get_env_fallback("APP_EMAIL", "ganeshsai@nuevostech.com")
 APP_PASSWORD = _get_env_fallback("APP_PASSWORD", "")
 recipient_default = _get_env_fallback("RECIPIENT_DEFAULT", "")
@@ -40,15 +34,11 @@ SMTP_HOST = _get_env_fallback("SMTP_HOST", "smtp.gmail.com")
 SMTP_PORT = int(_get_env_fallback("SMTP_PORT", "587"))
 SEND_CONFIRMATION = False
 LOG_FILE = Path(_get_env_fallback("LOG_FILE", "renewal.log"))
-
-# === Logging ===
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s | %(levelname)s | %(message)s",
     handlers=[logging.FileHandler(LOG_FILE, encoding="utf-8"), logging.StreamHandler()]
 )
-
-# === Email Templates ===
 TEMPLATE_SUBJECT = 'Renewed Expiry Date Notification'
 TEMPLATE_BODY = """Hi {Client},
 
@@ -64,12 +54,8 @@ NTQS Digital
 
 Note: Your agreement expires in {days_left} day(s)
 """
-
-# === Utility ===
 def clean_email_address(email: str) -> str:
     return email.strip().replace('\n', '').replace('\r', '') if email else ""
-
-# === Download ===
 def download_from_drive(file_id: str, dest: Path):
     if not file_id.strip():
         raise ValueError("FILE_ID is empty or missing.")
@@ -83,8 +69,6 @@ def download_from_drive(file_id: str, dest: Path):
     except Exception:
         logging.exception("Failed to download file from Google Drive.")
         raise
-
-# === Excel Header Detection ===
 def detect_header_and_load(path: Path) -> pd.DataFrame:
     raw = pd.read_excel(path, header=None, engine="openpyxl")
     header_idx = None
@@ -104,20 +88,16 @@ def detect_header_and_load(path: Path) -> pd.DataFrame:
     df.columns = [str(c).strip() for c in df.columns]
     df = df.dropna(how="all").reset_index(drop=True)
     return df
-
-# === Email Message Builder ===
 def build_message(sender: str, to_list: list, subject: str, body: str, attachment_path: str = None) -> EmailMessage:
     def _clean(e): return str(e).strip().replace('\n', '').replace('\r', '') if e else ""
     clean_sender = _clean(sender or RECIPIENTS[0])
     clean_to_list = [_clean(email) for email in (to_list or []) if _clean(email)]
     clean_subject = subject.strip().replace('\n', ' ').replace('\r', ' ') if subject else "No subject"
-
     msg = EmailMessage()
     msg['From'] = clean_sender
     msg['To'] = ", ".join(clean_to_list)
     msg['Subject'] = clean_subject
     msg.set_content(body or "", subtype='plain', charset='utf-8')
-
     if attachment_path:
         path = Path(attachment_path)
         if path.exists() and path.is_file():
@@ -127,8 +107,6 @@ def build_message(sender: str, to_list: list, subject: str, body: str, attachmen
         else:
             logging.warning(f"Attachment file not found: {attachment_path}")
     return msg
-
-# === Email Sending ===
 def send_email(msg: EmailMessage):
     if not SENDER_EMAIL or not APP_PASSWORD:
         logging.warning("Missing email credentials. Skipping email send.")
@@ -147,8 +125,6 @@ def send_email(msg: EmailMessage):
     except Exception:
         logging.exception("Failed to send email.")
     return False
-
-# === Agreement Parser ===
 def make_agreements_list(df: pd.DataFrame) -> list:
     agreements = []
     expiry_cols = [c for c in df.columns if any(tok in c.lower() for tok in ('expiry','due','end','expires'))]
@@ -156,18 +132,14 @@ def make_agreements_list(df: pd.DataFrame) -> list:
     file_cols = [c for c in df.columns if 'file' in c.lower() or c.lower() == 'name' or 'file name' in c.lower()]
     path_cols = [c for c in df.columns if 'path' in c.lower()]
     name_cols = [c for c in df.columns if any(tok in c.lower() for tok in ('name','client','contact','customer','person'))]
-
     if not expiry_cols:
         raise KeyError("No expiry-like column found in the Excel file.")
-
     expiry_col = expiry_cols[0]
     email_col = email_cols[0] if email_cols else None
     file_col = file_cols[0] if file_cols else None
     path_col = path_cols[0] if path_cols else None
     name_col = name_cols[0] if name_cols else None
-
     logging.info(f"Using expiry column: '{expiry_col}', email: '{email_col}', file: '{file_col}', path: '{path_col}', name: '{name_col}'")
-
     for idx, row in df.iterrows():
         try:
             expiry_raw = row.get(expiry_col)
@@ -190,15 +162,12 @@ def make_agreements_list(df: pd.DataFrame) -> list:
             logging.exception(f"Error parsing row {idx}; skipping.")
             continue
     return agreements
-
-# === Email Logic ===
 def send_confirmation_email(client_name: str = "Client", to_emails: list = None):
     to_addresses = to_emails if to_emails else RECIPIENTS
     subject = TEMPLATE_SUBJECT
     body = TEMPLATE_BODY.format(Client=client_name, new_expiry="15-09-2025", days_left=0, file_path="N/A")
     msg = build_message(SENDER_EMAIL, to_addresses, subject, body)
     send_email(msg)
-
 def send_renewal_reminder(agreement: dict, days_left: int):
     client_display = agreement.get('name') or agreement.get('email') or "Client"
     subject = f"Renewal Reminder: '{agreement['file']}' Expires Soon"
@@ -211,7 +180,6 @@ def send_renewal_reminder(agreement: dict, days_left: int):
     to_addr = [agreement.get('email')] or RECIPIENTS
     msg = build_message(SENDER_EMAIL, to_addr, subject, body, attachment_path=agreement.get('path'))
     send_email(msg)
-
 def send_hourly_alert(agreement: dict):
     client_display = agreement.get('name') or agreement.get('email') or "Client"
     subject = f"Renewal Reminder: '{agreement['file']}' Expires Today"
@@ -224,8 +192,6 @@ def send_hourly_alert(agreement: dict):
     to_addr = [agreement.get('email')] or RECIPIENTS
     msg = build_message(SENDER_EMAIL, to_addr, subject, body, attachment_path=agreement.get('path'))
     send_email(msg)
-
-# === Run Logic ===
 def run_reminders_and_alerts(agreements: list):
     today = date.today()
     for agreement in agreements:
@@ -235,8 +201,6 @@ def run_reminders_and_alerts(agreements: list):
     todays = [a for a in agreements if a['expiry_date'].date() == today]
     for agreement in todays:
         send_hourly_alert(agreement)
-
-# === Main ===
 def main_run_once():
     logging.info(f"Using sender email: {SENDER_EMAIL}")
     logging.info(f"Using recipients: {RECIPIENTS}")
@@ -253,9 +217,7 @@ def main_run_once():
         run_reminders_and_alerts(agreements)
     except Exception:
         logging.exception("Fatal error in main_run_once")
-
     logging.info("Script execution completed.")
-
 if __name__ == "__main__":
     main_run_once()
 
