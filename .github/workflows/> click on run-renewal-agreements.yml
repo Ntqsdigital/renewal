@@ -1,9 +1,9 @@
 name: Renewal Agreements Automation
 
 on:
-  workflow_dispatch:    
+  workflow_dispatch:
   schedule:
-    - cron: '0 6 * * *' 
+    - cron: '0 6 * * *'  # daily at 06:00 UTC (adjust if needed)
 
 jobs:
   renewal-job:
@@ -19,16 +19,31 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install pandas openpyxl gdown
+          python -m pip install --upgrade pip
+          pip install pandas openpyxl requests gdown
 
       - name: Run Renewal Agreements script
         env:
-          APP_EMAIL: ${{ secrets.APP_EMAIL }}
-          APP_PASSWORD: ${{ secrets.APP_PASSWORD }}
-          RECIPIENT_DEFAULT: ${{ secrets.RECIPIENT_DEFAULT }}
-          FILE_ID: ${{ secrets.FILE_ID }}
+          # Secrets you must add in Settings → Secrets & variables → Actions
+          SMTP_HOST: ${{ secrets.SMTP_HOST }}        # e.g. smtp.gmail.com
+          SMTP_PORT: ${{ secrets.SMTP_PORT }}        # e.g. 587
+          SMTP_USER: ${{ secrets.SMTP_USER }}        # e.g. ganeshsai@nuevostech.com
+          SMTP_PASS: ${{ secrets.SMTP_PASS }}        # your SMTP/app password
+          RECIPIENT_DEFAULT: ${{ secrets.RECIPIENT_DEFAULT }}  # e.g. ganeshsai@nuevostech.com
+          GDRIVE_FILE_ID: ${{ secrets.GDRIVE_FILE_ID }}        # Google Drive file id
           DOWNLOAD_PATH: Renewal.xlsx
-          SMTP_HOST: smtp.gmail.com
-          SMTP_PORT: 587
           LOG_FILE: renewal.log
-        run: python Renewal_Agreements.py
+        run: |
+          set -euo pipefail
+          # run the script with unbuffered output and capture logs
+          python -u Renewal_Agreements.py 2>&1 | tee "$LOG_FILE" || true
+
+      - name: Upload artifacts (Excel + logs)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: renewal-artifacts
+          path: |
+            Renewal.xlsx
+            renewal.log
+
