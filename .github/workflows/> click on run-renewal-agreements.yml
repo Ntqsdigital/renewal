@@ -1,7 +1,11 @@
 on:
   workflow_dispatch:
   schedule:
-    - cron: '0 * * * *'  # runs every hour, at minute 0
+    # Daily at 6:00 AM IST → reminders for 1–5 days before expiry
+    - cron: '30 0 * * *'  # 6:00 AM IST (00:30 UTC)
+
+    # Hourly → alerts for items expiring today
+    - cron: '30 * * * *'  # every hour UTC
 
 jobs:
   renewal-job:
@@ -30,7 +34,7 @@ jobs:
           GDRIVE_FILE_ID: ${{ secrets.GDRIVE_FILE_ID }}
           DOWNLOAD_PATH: Renewal.xlsx
           LOG_FILE: renewal.log
-          REMINDER_HOUR: "6"     # UTC hour to send daily reminders for 1..5 days left
+          REMINDER_HOUR: "6"  # used inside script for daily reminders
         run: |
           set -euo pipefail
           python -u Renewal_Agreements.py 2>&1 | tee "$LOG_FILE" || true
@@ -43,5 +47,6 @@ jobs:
           path: |
             Renewal.xlsx
             renewal.log
+
 
 
