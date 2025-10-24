@@ -1,9 +1,7 @@
-name: Renewal Agreements Automation
-
 on:
   workflow_dispatch:
   schedule:
-    - cron: '0 6 * * *'  # daily at 06:00 UTC (adjust if needed)
+    - cron: '0 * * * *'  # runs every hour, at minute 0
 
 jobs:
   renewal-job:
@@ -24,18 +22,17 @@ jobs:
 
       - name: Run Renewal Agreements script
         env:
-          # Secrets you must add in Settings → Secrets & variables → Actions
-          SMTP_HOST: ${{ secrets.SMTP_HOST }}        # e.g. smtp.gmail.com
-          SMTP_PORT: ${{ secrets.SMTP_PORT }}        # e.g. 587
-          SMTP_USER: ${{ secrets.SMTP_USER }}        # e.g. ganeshsai@nuevostech.com
-          SMTP_PASS: ${{ secrets.SMTP_PASS }}        # your SMTP/app password
-          RECIPIENT_DEFAULT: ${{ secrets.RECIPIENT_DEFAULT }}  # e.g. ganeshsai@nuevostech.com
-          GDRIVE_FILE_ID: ${{ secrets.GDRIVE_FILE_ID }}        # Google Drive file id
+          SMTP_USER: ${{ secrets.SMTP_USER }}
+          SMTP_PASS: ${{ secrets.SMTP_PASS }}
+          SMTP_HOST: ${{ secrets.SMTP_HOST }}
+          SMTP_PORT: ${{ secrets.SMTP_PORT }}
+          RECIPIENT_DEFAULT: ${{ secrets.RECIPIENT_DEFAULT }}
+          GDRIVE_FILE_ID: ${{ secrets.GDRIVE_FILE_ID }}
           DOWNLOAD_PATH: Renewal.xlsx
           LOG_FILE: renewal.log
+          REMINDER_HOUR: "6"     # UTC hour to send daily reminders for 1..5 days left
         run: |
           set -euo pipefail
-          # run the script with unbuffered output and capture logs
           python -u Renewal_Agreements.py 2>&1 | tee "$LOG_FILE" || true
 
       - name: Upload artifacts (Excel + logs)
@@ -46,4 +43,5 @@ jobs:
           path: |
             Renewal.xlsx
             renewal.log
+
 
