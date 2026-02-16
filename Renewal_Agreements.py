@@ -8,7 +8,6 @@ from email.message import EmailMessage
 from pathlib import Path
 import logging
 
-# ✅ GitHub Secrets Mapping
 SENDER_EMAIL = os.getenv("SMTP_USER")
 APP_PASSWORD = os.getenv("SMTP_PASS")
 FILE_ID = os.getenv("GDRIVE_FILE_ID")
