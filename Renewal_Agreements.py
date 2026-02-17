@@ -1,7 +1,7 @@
 import os
 import gdown
 import pandas as pd
-from datetime import datetime
+from datetime import datetime, timedelta
 import smtplib
 import ssl
 from email.message import EmailMessage
@@ -95,7 +95,7 @@ def mark_sent(agreement, tag):
 
 def download_from_drive(file_id: str, dest: Path):
     url = f"https://drive.google.com/uc?id={file_id}&export=download"
-    logging.info(f"Downloading sheet...")
+    logging.info("Downloading sheet...")
     gdown.download(url, str(dest), quiet=False)
 
 # ---------------- LOAD EXCEL ---------------- #
@@ -114,17 +114,14 @@ def detect_header_and_load(path: Path) -> pd.DataFrame:
 
     df = pd.read_excel(path, header=header_idx, engine="openpyxl")
 
-    # NORMALIZE HEADERS (IMPORTANT FIX)
     df.columns = (
-        df.columns
-        .astype(str)
+        df.columns.astype(str)
         .str.strip()
         .str.lower()
         .str.replace(r'\s+', ' ', regex=True)
     )
 
     df = df.dropna(how="all").reset_index(drop=True)
-
     logging.info(f"Detected Columns: {list(df.columns)}")
     return df
 
@@ -150,7 +147,6 @@ business -> {business_col}
     agreements = []
 
     for _, row in df.iterrows():
-
         expiry_dt = pd.to_datetime(row.get(expiry_col), errors='coerce', dayfirst=True)
         if pd.isna(expiry_dt):
             continue
@@ -185,43 +181,55 @@ def send_email(msg):
     logging.info(f"Sent -> {msg['To']}")
 
 def send_renewal_reminder(agreement):
-
     body = TEMPLATE_BODY.format(
         Team_Member_Name=agreement['name'] or "Team",
         Service_Name=agreement['service'],
         Business_Name=agreement['business'],
         Service_End_Date=agreement['expiry_date'].strftime('%d-%m-%Y')
     )
-
     msg = build_message(agreement['email'], body)
     send_email(msg)
 
-# ---------------- SCHEDULER ---------------- #
+# ---------------- SCHEDULER FIXED ---------------- #
 
 def run_reminders_and_alerts(agreements):
 
-    now = datetime.now()
+    # Convert UTC → IST
+    utc_now = datetime.utcnow()
+    now = utc_now + timedelta(hours=5, minutes=30)
     today = now.date()
+
+    logging.info(f"Current IST Time: {now.strftime('%Y-%m-%d %H:%M:%S')}")
 
     for agreement in agreements:
 
+        if not agreement['email']:
+            continue
+
         days_left = (agreement['expiry_date'].date() - today).days
 
+        # 5 to 1 days before
         if 1 <= days_left <= 5:
             tag = f"pre_{days_left}"
             if not already_sent(agreement, tag):
+                logging.info(f"Sending PRE reminder ({days_left}) -> {agreement['email']}")
                 send_renewal_reminder(agreement)
                 mark_sent(agreement, tag)
 
+        # Expiry day alerts
         if days_left == 0:
 
+            # 9:30 AM IST
             if now.hour == 9 and 25 <= now.minute <= 35:
                 if not already_sent(agreement, "morning"):
+                    logging.info(f"Sending MORNING alert -> {agreement['email']}")
                     send_renewal_reminder(agreement)
                     mark_sent(agreement, "morning")
 
+            # 5:30 PM IST
             if now.hour == 17 and 25 <= now.minute <= 35:
                 if not already_sent(agreement, "evening"):
+                    logging.info(f"Sending EVENING alert -> {agreement['email']}")
                     send_renewal_reminder(agreement)
                     mark_sent(agreement, "evening")
 
