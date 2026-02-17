@@ -38,7 +38,7 @@ TEMPLATE_BODY = """
 <p>Hi {Team_Member_Name},</p>
 
 <p>
-This is to inform you that the <b>{Service_Name}</b> service for (<b>{Business_Name}</b>) is coming up for renewal on <b>{Service_End_Date}</b>.
+This is to inform you that the <b>{Service_Name}</b> service for <b>{Business_Name}</b> is coming up for renewal on <b>{Service_End_Date}</b>.
 </p>
 
 <p>Please make sure all deliverables are delivered. If not, reach out to Famida and take the necessary action.</p>
