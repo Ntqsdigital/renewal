@@ -1,15 +1,19 @@
 on:
   workflow_dispatch:
   schedule:
-    # Daily at 6:00 AM IST → reminders for 1–5 days before expiry
-    - cron: '30 0 * * *'  # 6:00 AM IST (00:30 UTC)
+    # 6:00 AM IST → reminders
+    - cron: '30 0 * * *'
 
-    # Hourly → alerts for items expiring today
-    - cron: '30 * * * *'  # every hour UTC
+    # 9:30 AM IST → expiry alert morning
+    - cron: '0 4 * * *'
+
+    # 5:30 PM IST → expiry alert evening
+    - cron: '0 12 * * *'
 
 jobs:
   renewal-job:
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -34,10 +38,8 @@ jobs:
           GDRIVE_FILE_ID: ${{ secrets.GDRIVE_FILE_ID }}
           DOWNLOAD_PATH: Renewal.xlsx
           LOG_FILE: renewal.log
-          REMINDER_HOUR: "6"  # used inside script for daily reminders
         run: |
-          set -euo pipefail
-          python -u Renewal_Agreements.py 2>&1 | tee "$LOG_FILE" || true
+          python -u Renewal_Agreements.py 2>&1 | tee "$LOG_FILE"
 
       - name: Upload artifacts (Excel + logs)
         if: always()
