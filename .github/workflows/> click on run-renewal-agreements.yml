@@ -1,13 +1,10 @@
 on:
   workflow_dispatch:
   schedule:
-    # 6:00 AM IST → reminders
-    - cron: '30 0 * * *'
-
-    # 9:30 AM IST → expiry alert morning
+    # 9:30 AM IST → 04:00 UTC
     - cron: '0 4 * * *'
 
-    # 5:30 PM IST → expiry alert evening
+    # 5:30 PM IST → 12:00 UTC
     - cron: '0 12 * * *'
 
 jobs:
@@ -34,10 +31,11 @@ jobs:
           SMTP_PASS: ${{ secrets.SMTP_PASS }}
           SMTP_HOST: ${{ secrets.SMTP_HOST }}
           SMTP_PORT: ${{ secrets.SMTP_PORT }}
-          RECIPIENT_DEFAULT: ${{ secrets.RECIPIENT_DEFAULT }}
           GDRIVE_FILE_ID: ${{ secrets.GDRIVE_FILE_ID }}
           DOWNLOAD_PATH: Renewal.xlsx
           LOG_FILE: renewal.log
+          FAMIDA_EMAIL: ${{ secrets.FAMIDA_EMAIL }}
+
         run: |
           python -u Renewal_Agreements.py 2>&1 | tee "$LOG_FILE"
 
@@ -49,6 +47,5 @@ jobs:
           path: |
             Renewal.xlsx
             renewal.log
-
 
 
