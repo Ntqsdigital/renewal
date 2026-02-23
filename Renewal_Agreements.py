@@ -137,8 +137,6 @@ def make_agreements_list(df: pd.DataFrame):
     name_col = find_column(['name'], df.columns)
     service_col = find_column(['service'], df.columns)
     business_col = find_column(['business', 'client', 'company'], df.columns)
-
-    # NEW → Renewal Status column detection
     status_col = find_column(['renewal status', 'status'], df.columns)
 
     logging.info(f"""
@@ -164,7 +162,6 @@ status -> {status_col}
             'name': clean(row.get(name_col)),
             'service': clean(row.get(service_col)),
             'business': clean(row.get(business_col)),
-            # NEW
             'status': clean(row.get(status_col)).lower() if status_col else "pending"
         })
 
@@ -199,7 +196,7 @@ def send_renewal_reminder(agreement):
     msg = build_message(agreement['email'], body)
     send_email(msg)
 
-# ---------------- NEW ESCALATION FUNCTION ---------------- #
+# ---------------- ESCALATION FUNCTION ---------------- #
 
 def send_escalation_to_famida(agreement, days_after_expiry):
 
@@ -250,7 +247,6 @@ def run_reminders_and_alerts(agreements):
 
         days_left = (agreement['expiry_date'].date() - today).days
 
-        # 5 to 1 days before
         if 1 <= days_left <= 5:
             tag = f"pre_{days_left}"
             if not already_sent(agreement, tag):
@@ -258,7 +254,6 @@ def run_reminders_and_alerts(agreements):
                 send_renewal_reminder(agreement)
                 mark_sent(agreement, tag)
 
-        # Expiry day alerts
         if days_left == 0:
 
             if now.hour == 9 and 25 <= now.minute <= 35:
@@ -273,22 +268,24 @@ def run_reminders_and_alerts(agreements):
                     send_renewal_reminder(agreement)
                     mark_sent(agreement, "evening")
 
-        # ---------------- NEW ESCALATION LOGIC ----------------
+        # -------- ESCALATION (ONLY AT 9:30 AM) --------
 
         if days_left < 0 and agreement.get('status') != "done":
 
-            days_after_expiry = abs(days_left)
+            if now.hour == 9 and 25 <= now.minute <= 35:
 
-            if days_after_expiry % 2 == 0:
+                days_after_expiry = abs(days_left)
 
-                tag = f"escalation_day_{days_after_expiry}"
+                if days_after_expiry % 2 == 0:
 
-                if not already_sent(agreement, tag):
+                    tag = f"escalation_day_{days_after_expiry}"
 
-                    logging.info(f"Escalation Day {days_after_expiry} -> {agreement['business']}")
+                    if not already_sent(agreement, tag):
 
-                    send_escalation_to_famida(agreement, days_after_expiry)
-                    mark_sent(agreement, tag)
+                        logging.info(f"Escalation Day {days_after_expiry} -> {agreement['business']}")
+
+                        send_escalation_to_famida(agreement, days_after_expiry)
+                        mark_sent(agreement, tag)
 
 # ---------------- MAIN ---------------- #
 
