@@ -15,6 +15,9 @@ SENDER_EMAIL = os.getenv("SMTP_USER")
 APP_PASSWORD = os.getenv("SMTP_PASS")
 FILE_ID = os.getenv("GDRIVE_FILE_ID")
 
+# NEW → Famida email
+FAMIDA_EMAIL = os.getenv("FAMIDA_EMAIL", "Famida.fesmini@nuevostech.com")
+
 DOWNLOAD_PATH = Path(os.getenv("DOWNLOAD_PATH", "Renewal.xlsx"))
 SMTP_HOST = os.getenv("SMTP_HOST", "smtp.gmail.com")
 SMTP_PORT = int(os.getenv("SMTP_PORT", 587))
@@ -135,6 +138,9 @@ def make_agreements_list(df: pd.DataFrame):
     service_col = find_column(['service'], df.columns)
     business_col = find_column(['business', 'client', 'company'], df.columns)
 
+    # NEW → Renewal Status column detection
+    status_col = find_column(['renewal status', 'status'], df.columns)
+
     logging.info(f"""
 Column Mapping:
 expiry -> {expiry_col}
@@ -142,6 +148,7 @@ email -> {email_col}
 name -> {name_col}
 service -> {service_col}
 business -> {business_col}
+status -> {status_col}
 """)
 
     agreements = []
@@ -157,6 +164,8 @@ business -> {business_col}
             'name': clean(row.get(name_col)),
             'service': clean(row.get(service_col)),
             'business': clean(row.get(business_col)),
+            # NEW
+            'status': clean(row.get(status_col)).lower() if status_col else "pending"
         })
 
     return agreements
@@ -190,11 +199,44 @@ def send_renewal_reminder(agreement):
     msg = build_message(agreement['email'], body)
     send_email(msg)
 
+# ---------------- NEW ESCALATION FUNCTION ---------------- #
+
+def send_escalation_to_famida(agreement, days_after_expiry):
+
+    body = f"""
+    <p>Hi Famida,</p>
+
+    <p>
+    The <b>{agreement['service']}</b> service for 
+    <b>{agreement['business']}</b> was due on 
+    <b>{agreement['expiry_date'].strftime('%d-%m-%Y')}</b>.
+    </p>
+
+    <p>
+    It has now been <b>{days_after_expiry} days</b> since the renewal date
+    and the renewal is still not marked as completed.
+    </p>
+
+    <p>
+    Kindly follow up and take necessary action.
+    </p>
+
+    <p>Thanks,<br>Renewal Monitoring System</p>
+    """
+
+    msg = EmailMessage()
+    msg['From'] = SENDER_EMAIL
+    msg['To'] = FAMIDA_EMAIL
+    msg['Subject'] = f"⚠ Renewal Pending ({days_after_expiry} Days) - {agreement['business']}"
+    msg.set_content("HTML Email Required")
+    msg.add_alternative(body, subtype='html')
+
+    send_email(msg)
+
 # ---------------- SCHEDULER FIXED ---------------- #
 
 def run_reminders_and_alerts(agreements):
 
-    # Convert UTC → IST
     utc_now = datetime.utcnow()
     now = utc_now + timedelta(hours=5, minutes=30)
     today = now.date()
@@ -219,19 +261,34 @@ def run_reminders_and_alerts(agreements):
         # Expiry day alerts
         if days_left == 0:
 
-            # 9:30 AM IST
             if now.hour == 9 and 25 <= now.minute <= 35:
                 if not already_sent(agreement, "morning"):
                     logging.info(f"Sending MORNING alert -> {agreement['email']}")
                     send_renewal_reminder(agreement)
                     mark_sent(agreement, "morning")
 
-            # 5:30 PM IST
             if now.hour == 17 and 25 <= now.minute <= 35:
                 if not already_sent(agreement, "evening"):
                     logging.info(f"Sending EVENING alert -> {agreement['email']}")
                     send_renewal_reminder(agreement)
                     mark_sent(agreement, "evening")
+
+        # ---------------- NEW ESCALATION LOGIC ----------------
+
+        if days_left < 0 and agreement.get('status') != "done":
+
+            days_after_expiry = abs(days_left)
+
+            if days_after_expiry % 2 == 0:
+
+                tag = f"escalation_day_{days_after_expiry}"
+
+                if not already_sent(agreement, tag):
+
+                    logging.info(f"Escalation Day {days_after_expiry} -> {agreement['business']}")
+
+                    send_escalation_to_famida(agreement, days_after_expiry)
+                    mark_sent(agreement, tag)
 
 # ---------------- MAIN ---------------- #
 
